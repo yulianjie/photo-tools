@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>照片水印</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background: url('https://images.unsplash.com/photo-1549497042-9a5d1163e77f?q=80&w=2670&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D') no-repeat center center fixed;
+            background-size: cover;
+        }
+        .frosted-glass {
+            background-color: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 1rem;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+    <div class="frosted-glass w-full max-w-4xl p-6 md:p-8 space-y-6">
+        <h1 class="text-3xl font-bold text-gray-800 text-center">照片边框水印工具</h1>
+        <p class="text-center text-gray-600">选择一张照片，我们将自动提取EXIF信息并添加水印边框。</p>
+
+        <!-- 文件上传区域 -->
+        <div class="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-400 rounded-lg text-gray-600 cursor-pointer hover:bg-white/30 transition-colors"
+             id="drop-area">
+            <input type="file" id="file-input" class="hidden" accept="image/jpeg, image/png">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <p class="mt-4">将照片拖放到这里，或<span class="font-bold text-gray-800">点击上传</span></p>
+            <p id="file-name" class="mt-2 text-sm italic"></p>
+        </div>
+
+        <!-- 结果展示和下载区域 -->
+        <div id="result-container" class="mt-6 hidden flex flex-col items-center space-y-4">
+            <canvas id="photo-canvas" class="w-full h-auto rounded-lg shadow-lg"></canvas>
+            <button id="download-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                下载照片
+            </button>
+        </div>
+
+        <!-- 消息提示区域 -->
+        <div id="message" class="text-center text-red-500 mt-4 font-semibold"></div>
+    </div>
+
+    <script>
+        // DOM元素
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('file-input');
+        const fileNameSpan = document.getElementById('file-name');
+        const resultContainer = document.getElementById('result-container');
+        const photoCanvas = document.getElementById('photo-canvas');
+        const downloadBtn = document.getElementById('download-btn');
+        const messageDiv = document.getElementById('message');
+
+        // 处理文件上传的函数
+        function handleFile(file) {
+            if (!file || !file.type.startsWith('image/')) {
+                showMessage('请选择一个有效的图片文件。', 'error');
+                return;
+            }
+
+            showMessage('');
+            fileNameSpan.textContent = `已选择：${file.name}`;
+            
+            // 使用FileReader读取文件内容
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    try {
+                        // 使用EXIF.js解析EXIF数据
+                        EXIF.getData(img, function() {
+                            const make = EXIF.getTag(this, 'Make') || '未知品牌';
+                            const model = EXIF.getTag(this, 'Model') || '未知型号';
+                            const exposureTime = EXIF.getTag(this, 'ExposureTime');
+                            const iso = EXIF.getTag(this, 'ISOSpeedRatings');
+                            const focalLength = EXIF.getTag(this, 'FocalLength');
+
+                            // 格式化拍摄参数
+                            const shutter = exposureTime ? `1/${Math.round(1 / exposureTime)}s` : '未知快门';
+                            const isoVal = iso ? `ISO ${iso}` : '未知ISO';
+                            const focalLengthVal = focalLength ? `${focalLength.numerator / focalLength.denominator}mm` : '未知焦距';
+
+                            const exifData = { make, model, shutter, isoVal, focalLengthVal };
+                            drawWatermark(img, exifData);
+                        });
+                    } catch (err) {
+                        showMessage('无法读取EXIF信息或处理图片。', 'error');
+                        console.error('Error during image processing:', err);
+                    }
+                };
+                img.src = e.target.result;
+            };
+            reader.onerror = function() {
+                showMessage('读取文件失败。', 'error');
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // 在Canvas上绘制水印
+        async function drawWatermark(img, exifData) {
+            // 计算新的Canvas尺寸（原图 + 边框）
+            const originalWidth = img.width;
+            const originalHeight = img.height;
+            const borderHeight = Math.max(originalHeight * 0.1, 50); // 边框高度为原图高度的10%，最小50px
+            const newWidth = originalWidth;
+            const newHeight = originalHeight + borderHeight;
+
+            photoCanvas.width = newWidth;
+            photoCanvas.height = newHeight;
+            const ctx = photoCanvas.getContext('2d');
+
+            // 1. 绘制原始图片
+            ctx.drawImage(img, 0, 0, originalWidth, originalHeight);
+
+            // 2. 绘制底部边框
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.fillRect(0, originalHeight, newWidth, borderHeight);
+
+            // 3. 绘制文字水印
+            const textPadding = newWidth * 0.03;
+            const textSize = borderHeight * 0.25;
+            ctx.font = `${textSize}px 'Inter'`;
+            ctx.fillStyle = '#333';
+            ctx.textBaseline = 'middle';
+
+            const logoSize = borderHeight * 0.4;
+            let currentX = textPadding;
+            const centerY = originalHeight + borderHeight / 2;
+            
+            // 动态加载品牌 Logo
+            const normalizedMake = exifData.make.toLowerCase().split(' ')[0]; // 只取第一个词作为品牌名
+            const logoUrl = `./logos/${normalizedMake}.svg`;
+
+            try {
+                const response = await fetch(logoUrl);
+                if (response.ok) {
+                    const svgText = await response.text();
+                    const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
+                    const svgUrl = URL.createObjectURL(svgBlob);
+                    
+                    const svgImg = new Image();
+                    svgImg.onload = () => {
+                        ctx.drawImage(svgImg, currentX, centerY - logoSize / 2, logoSize, logoSize);
+                        URL.revokeObjectURL(svgUrl); // 释放内存
+                        currentX += logoSize + textPadding;
+                        // 继续绘制型号和参数
+                        drawRemainingText(ctx, currentX, centerY, newWidth, textPadding, exifData, textSize);
+                    };
+                    svgImg.src = svgUrl;
+                } else {
+                    // 如果 Logo 加载失败，回退到显示文字品牌名
+                    ctx.fillText(exifData.make, currentX, centerY);
+                    currentX += ctx.measureText(exifData.make).width + textPadding * 2;
+                    // 继续绘制型号和参数
+                    drawRemainingText(ctx, currentX, centerY, newWidth, textPadding, exifData, textSize);
+                }
+            } catch (err) {
+                // 如果 Logo 加载出现异常，回退到显示文字品牌名
+                console.error('Failed to load SVG logo:', err);
+                ctx.fillText(exifData.make, currentX, centerY);
+                currentX += ctx.measureText(exifData.make).width + textPadding * 2;
+                // 继续绘制型号和参数
+                drawRemainingText(ctx, currentX, centerY, newWidth, textPadding, exifData, textSize);
+            }
+
+            resultContainer.classList.remove('hidden');
+        }
+
+        // 辅助函数：绘制相机型号和参数
+        function drawRemainingText(ctx, currentX, centerY, newWidth, textPadding, exifData, textSize) {
+             // 绘制相机型号
+            ctx.font = `${textSize}px 'Inter'`;
+            ctx.fillStyle = '#333';
+            ctx.fillText(exifData.model, currentX, centerY);
+            currentX += ctx.measureText(exifData.model).width + textPadding * 2;
+
+            // 绘制拍摄参数
+            const paramsText = `${exifData.shutter} | ${exifData.isoVal} | ${exifData.focalLengthVal}`;
+            ctx.font = `${textSize * 0.8}px 'Inter'`;
+            ctx.fillStyle = '#666';
+            ctx.fillText(paramsText, newWidth - ctx.measureText(paramsText).width - textPadding, centerY);
+        }
+
+        // 下载处理
+        downloadBtn.addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.download = `watermark_${fileNameSpan.textContent.replace('已选择：', '')}`;
+            link.href = photoCanvas.toDataURL('image/jpeg', 0.9);
+            link.click();
+        });
+
+        // 拖放事件监听
+        dropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropArea.classList.add('bg-white/30');
+        });
+
+        dropArea.addEventListener('dragleave', () => {
+            dropArea.classList.remove('bg-white/30');
+        });
+
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('bg-white/30');
+            const file = e.dataTransfer.files[0];
+            fileInput.files = e.dataTransfer.files; // 将文件赋给input，方便重用逻辑
+            handleFile(file);
+        });
+
+        // 文件输入事件监听
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            handleFile(file);
+        });
+
+        // 添加点击事件，点击拖放区域时触发文件选择
+        dropArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // 消息提示函数
+        function showMessage(msg, type = 'info') {
+            messageDiv.textContent = msg;
+            messageDiv.className = `text-center mt-4 font-semibold ${type === 'error' ? 'text-red-500' : 'text-green-500'}`;
+        }
+    </script>
+</body>
+</html>
